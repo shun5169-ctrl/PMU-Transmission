@@ -1,0 +1,427 @@
+// ============================================================
+// PASSCODE — change this to your own secret word/phrase.
+// This is the ONLY line you need to update.
+// ============================================================
+define( 'MSM_EDIT_PASSCODE', 'USS2026' );
+
+// ============================================================
+// DELETE PASSCODE — separate, stronger code required for
+// deleting saved lands. Must be different from edit passcode.
+// ============================================================
+define( 'MSM_DELETE_PASSCODE', 'USS2026-DEL' );
+
+
+// ============================================================
+// SECTION 1: Frontend configuration (wp_head injector)
+// ============================================================
+add_action('wp_head', function () {
+    if ( ! is_page('new-transmission-and-pmu') ) {
+        return;
+    }
+    ?>
+    <script>
+    window.SHAPE_API_SAVE_URL        = '<?php echo esc_url( rest_url('samaiden/v1/land-shapes') ); ?>';
+    window.SHAPE_API_NONCE           = '<?php echo esc_js( wp_create_nonce('wp_rest') ); ?>';
+    window.CANDIDATE_SITES_API_URL   = '<?php echo esc_url( rest_url('samaiden/v1/candidate-sites') ); ?>';
+    window.CANDIDATE_SITES_API_NONCE = '<?php echo esc_js( wp_create_nonce('wp_rest') ); ?>';
+    </script>
+    <?php
+});
+
+
+// ============================================================
+// SECTION 2: Passcode verification helper
+// Used as permission_callback on all write (POST) routes
+// ============================================================
+function msm_verify_passcode( WP_REST_Request $request ) {
+    $passcode = $request->get_header('x-edit-passcode');
+    return hash_equals( MSM_EDIT_PASSCODE, (string) $passcode );
+}
+
+
+// ============================================================
+// SECTION 3: Passcode verify endpoint
+// POST samaiden/v1/verify-passcode
+// Called by the frontend unlock modal
+// ============================================================
+add_action('rest_api_init', function () {
+    register_rest_route('samaiden/v1', '/verify-passcode', [
+        'methods'             => 'POST',
+        'permission_callback' => '__return_true',
+        'callback'            => function ( WP_REST_Request $request ) {
+            $data     = $request->get_json_params();
+            $passcode = isset( $data['passcode'] ) ? (string) $data['passcode'] : '';
+            if ( hash_equals( MSM_EDIT_PASSCODE, $passcode ) ) {
+                return new WP_REST_Response( [ 'success' => true ], 200 );
+            }
+            return new WP_REST_Response( [ 'success' => false ], 200 );
+        },
+    ]);
+
+    // ========================================================
+    // Delete-passcode verify endpoint
+    // POST samaiden/v1/verify-delete-passcode
+    // Called by the frontend when user tries to delete a land
+    // ========================================================
+    register_rest_route('samaiden/v1', '/verify-delete-passcode', [
+        'methods'             => 'POST',
+        'permission_callback' => '__return_true',
+        'callback'            => function ( WP_REST_Request $request ) {
+            $data     = $request->get_json_params();
+            $passcode = isset( $data['passcode'] ) ? (string) $data['passcode'] : '';
+            if ( hash_equals( MSM_DELETE_PASSCODE, $passcode ) ) {
+                return new WP_REST_Response( [ 'success' => true ], 200 );
+            }
+            return new WP_REST_Response( [ 'success' => false ], 200 );
+        },
+    ]);
+});
+
+
+// ============================================================
+// SECTION 4: Land Shapes REST API
+// Shapes are stored as a GeoJSON FeatureCollection object.
+// Summary is stored as an array of row objects.
+// GET  — public (no passcode)
+// POST — passcode required via X-Edit-Passcode header
+// ============================================================
+add_action('rest_api_init', function () {
+    register_rest_route('samaiden/v1', '/land-shapes', [
+        'methods'             => 'GET',
+        'callback'            => 'samaiden_get_land_shapes',
+        'permission_callback' => '__return_true',
+    ]);
+    register_rest_route('samaiden/v1', '/land-shapes', [
+        'methods'             => 'POST',
+        'callback'            => 'samaiden_save_land_shapes',
+        'permission_callback' => 'msm_verify_passcode',
+    ]);
+});
+
+function samaiden_save_land_shapes( WP_REST_Request $request ) {
+    $data    = $request->get_json_params();
+    $shapes  = isset( $data['shapes'] )  ? $data['shapes']  : null;
+    $summary = isset( $data['summary'] ) ? $data['summary'] : null;
+    if ( empty( $shapes ) ) {
+        return new WP_REST_Response( [ 'message' => 'No shapes provided' ], 400 );
+    }
+    update_option( 'msm_land_shapes',  $shapes );
+    update_option( 'msm_land_summary', $summary );
+    return new WP_REST_Response( [ 'success' => true ], 200 );
+}
+
+function samaiden_get_land_shapes( WP_REST_Request $request ) {
+    return new WP_REST_Response(
+        [ 'shapes' => get_option('msm_land_shapes'), 'summary' => get_option('msm_land_summary') ],
+        200
+    );
+}
+
+
+// ============================================================
+// SECTION 5: Candidate Sites REST API
+// GET  — public (no passcode)
+// POST — passcode required via X-Edit-Passcode header
+// ============================================================
+add_action('rest_api_init', function () {
+    register_rest_route('samaiden/v1', '/candidate-sites', [
+        'methods'             => 'GET',
+        'callback'            => 'samaiden_get_candidate_sites',
+        'permission_callback' => '__return_true',
+    ]);
+    register_rest_route('samaiden/v1', '/candidate-sites', [
+        'methods'             => 'POST',
+        'callback'            => 'samaiden_save_candidate_sites',
+        'permission_callback' => 'msm_verify_passcode',
+    ]);
+});
+
+function samaiden_get_candidate_sites( WP_REST_Request $request ) {
+    return new WP_REST_Response( [ 'sites' => get_option('msm_candidate_sites', []) ], 200 );
+}
+
+function samaiden_save_candidate_sites( WP_REST_Request $request ) {
+    $data  = $request->get_json_params();
+    $sites = isset( $data['sites'] ) ? $data['sites'] : null;
+    if ( ! is_array( $sites ) ) {
+        return new WP_REST_Response( [ 'message' => 'sites must be an array' ], 400 );
+    }
+    update_option( 'msm_candidate_sites', $sites );
+    return new WP_REST_Response( [ 'success' => true ], 200 );
+}
+
+
+// ============================================================
+// SECTION 6: Admin Menu — PMU & Transmission Data Viewer
+//
+// Data structure notes (matches the frontend JavaScript):
+//
+//  msm_land_shapes  → GeoJSON FeatureCollection (array/object)
+//                     { type: 'FeatureCollection', features: [ ... ] }
+//                     Each feature has: properties (name, landOwner,
+//                     rentalFee, state, city, status, capacityMwp,
+//                     connVoltage, connDistKm, nearestSub, nearestSubDist)
+//                     and geometry.coordinates
+//
+//  msm_land_summary → Array of row objects
+//                     [ { index, status, name, land_owner, state, city,
+//                         rental_fee_rm, capacity_mwp, area_acres, area_m2,
+//                         center_lat, center_lng, nearest_substation,
+//                         nearest_sub_dist_km, connection_voltage,
+//                         connection_dist_km, notes }, ... ]
+//
+//  msm_candidate_sites → Array of site objects
+//                        [ { id, name, lat, lng }, ... ]
+// ============================================================
+add_action('admin_menu', function () {
+    add_menu_page(
+        'PMU & Transmission Data',
+        'PMU & Transmission',
+        'manage_options',
+        'pmu-transmission-data',
+        'msm_render_pmu_admin_page',
+        'dashicons-location-alt',
+        30
+    );
+});
+
+function msm_render_pmu_admin_page() {
+
+    // ── Load raw options ──────────────────────────────────────
+    $shapes_raw  = get_option('msm_land_shapes',     null);
+    $summary_raw = get_option('msm_land_summary',    null);
+    $sites_raw   = get_option('msm_candidate_sites', []);
+
+    // ── Decode JSON strings if WP stored them that way ────────
+    if ( is_string($shapes_raw) )  $shapes_raw  = json_decode($shapes_raw,  true);
+    if ( is_string($summary_raw) ) $summary_raw = json_decode($summary_raw, true);
+    if ( is_string($sites_raw) )   $sites_raw   = json_decode($sites_raw,   true);
+
+    // ── Extract the features array from the GeoJSON FeatureCollection ──
+    // The frontend saves: { type:'FeatureCollection', features:[ ... ] }
+    $features = [];
+    if ( is_array($shapes_raw) ) {
+        if ( isset($shapes_raw['features']) && is_array($shapes_raw['features']) ) {
+            // Standard GeoJSON FeatureCollection
+            $features = $shapes_raw['features'];
+        } elseif ( isset($shapes_raw[0]) ) {
+            // Fallback: plain array of features
+            $features = $shapes_raw;
+        }
+    }
+
+    // ── Summary rows — already a flat array of objects ────────
+    $summary_rows = is_array($summary_raw) ? $summary_raw : [];
+
+    // ── Candidate sites ───────────────────────────────────────
+    $sites = is_array($sites_raw) ? $sites_raw : [];
+
+    $shape_count = count($features);
+    $site_count  = count($sites);
+
+    ?>
+    <div class="wrap">
+        <h1>PMU &amp; Transmission Data</h1>
+
+        <!-- ── Summary Cards ── -->
+        <div style="display:flex; gap:20px; margin:20px 0;">
+            <div style="background:#fff; border:1px solid #ddd; border-radius:6px; padding:20px; min-width:160px; text-align:center;">
+                <div style="font-size:36px; font-weight:bold; color:#2271b1;"><?php echo esc_html($shape_count); ?></div>
+                <div style="color:#555;">Land Shapes</div>
+            </div>
+            <div style="background:#fff; border:1px solid #ddd; border-radius:6px; padding:20px; min-width:160px; text-align:center;">
+                <div style="font-size:36px; font-weight:bold; color:#2271b1;"><?php echo esc_html($site_count); ?></div>
+                <div style="color:#555;">Candidate Sites</div>
+            </div>
+        </div>
+
+        <!-- ── Land Shapes Table (from GeoJSON features) ── -->
+        <div style="background:#fff; border:1px solid #ddd; border-radius:6px; padding:20px; margin-bottom:20px;">
+            <h2 style="margin-top:0;">Land Shapes</h2>
+            <?php if ( $shape_count > 0 ) : ?>
+            <div style="overflow-x:auto;">
+            <table class="widefat fixed striped" style="min-width:900px;">
+                <thead>
+                    <tr>
+                        <th style="width:35px;">#</th>
+                        <th style="width:100px;">Status</th>
+                        <th style="width:80px;">Cap (MWp)</th>
+                        <th>Name</th>
+                        <th>Land Owner</th>
+                        <th style="width:100px;">State</th>
+                        <th style="width:100px;">City</th>
+                        <th>Nearest Sub</th>
+                        <th style="width:80px;">Sub Dist</th>
+                        <th>Grid Conn</th>
+                        <th style="width:80px;">Line Dist</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <?php foreach ( $features as $i => $feature ) :
+                    if ( ! is_array($feature) ) continue;
+                    $props = isset($feature['properties']) && is_array($feature['properties'])
+                             ? $feature['properties'] : [];
+
+                    $name       = isset($props['name'])           ? $props['name']           : '—';
+                    $owner      = isset($props['landOwner'])       ? $props['landOwner']       : '—';
+                    $state      = isset($props['state'])           ? $props['state']           : '—';
+                    $city       = isset($props['city'])            ? $props['city']            : '—';
+                    $status     = isset($props['status'])          ? $props['status']          : 'Prospecting';
+                    $capacity   = isset($props['capacityMwp'])     ? $props['capacityMwp']     : '—';
+                    $nearestSub = isset($props['nearestSub'])      ? $props['nearestSub']      : '—';
+                    $subDist    = isset($props['nearestSubDist'])   ? $props['nearestSubDist']   : '—';
+                    $connVolt   = isset($props['connVoltage'])      ? $props['connVoltage']      : '—';
+                    $connDist   = isset($props['connDistKm'])       ? $props['connDistKm']       : '—';
+
+                    // Count polygon points from geometry
+                    $point_count = '—';
+                    if ( isset($feature['geometry']['coordinates'][0]) && is_array($feature['geometry']['coordinates'][0]) ) {
+                        $point_count = count($feature['geometry']['coordinates'][0]);
+                    }
+                ?>
+                    <tr>
+                        <td><?php echo $i + 1; ?></td>
+                        <td><span style="font-weight:600;"><?php echo esc_html($status); ?></span></td>
+                        <td><?php echo esc_html($capacity); ?></td>
+                        <td><?php echo esc_html($name ?: '—'); ?></td>
+                        <td><?php echo esc_html($owner ?: '—'); ?></td>
+                        <td><?php echo esc_html($state ?: '—'); ?></td>
+                        <td><?php echo esc_html($city ?: '—'); ?></td>
+                        <td><?php echo esc_html($nearestSub ?: '—'); ?></td>
+                        <td><?php echo esc_html($subDist !== '' && $subDist !== '—' ? $subDist . ' km' : '—'); ?></td>
+                        <td><?php echo esc_html($connVolt ?: '—'); ?></td>
+                        <td><?php echo esc_html($connDist !== '' && $connDist !== '—' ? $connDist . ' km' : '—'); ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+            </div>
+            <?php else : ?>
+                <p style="color:#888;">No land shapes saved yet.</p>
+            <?php endif; ?>
+        </div>
+
+        <!-- ── Summary Table (area + centroid from frontend calculation) ── -->
+        <?php if ( ! empty($summary_rows) ) : ?>
+        <div style="background:#fff; border:1px solid #ddd; border-radius:6px; padding:20px; margin-bottom:20px;">
+            <h2 style="margin-top:0;">Summary (Area &amp; Location)</h2>
+            <div style="overflow-x:auto;">
+            <table class="widefat fixed striped" style="min-width:700px;">
+                <thead>
+                    <tr>
+                        <th style="width:35px;">#</th>
+                        <th>Name</th>
+                        <th style="width:100px;">Area (acres)</th>
+                        <th style="width:100px;">Area (m²)</th>
+                        <th style="width:110px;">Centre Lat</th>
+                        <th style="width:110px;">Centre Lng</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <?php foreach ( $summary_rows as $j => $row ) :
+                    if ( ! is_array($row) ) continue;
+                    $rName   = isset($row['name'])       ? $row['name']       : '—';
+                    $rAcres  = isset($row['area_acres']) ? $row['area_acres'] : '—';
+                    $rM2     = isset($row['area_m2'])    ? $row['area_m2']    : '—';
+                    $rLat    = isset($row['center_lat']) ? $row['center_lat'] : '—';
+                    $rLng    = isset($row['center_lng']) ? $row['center_lng'] : '—';
+                    $rNotes  = isset($row['notes'])      ? $row['notes']      : '';
+                ?>
+                    <tr>
+                        <td><?php echo $j + 1; ?></td>
+                        <td><?php echo esc_html($rName ?: '—'); ?></td>
+                        <td style="text-align:right;"><?php echo esc_html($rAcres); ?></td>
+                        <td style="text-align:right;"><?php echo esc_html($rM2); ?></td>
+                        <td><?php echo esc_html($rLat); ?></td>
+                        <td><?php echo esc_html($rLng); ?></td>
+                        <td style="font-size:11px;"><?php echo esc_html($rNotes ?: '—'); ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+            </div>
+        </div>
+        <?php endif; ?>
+
+        <!-- ── Candidate Sites Table ── -->
+        <div style="background:#fff; border:1px solid #ddd; border-radius:6px; padding:20px; margin-bottom:20px;">
+            <h2 style="margin-top:0;">Candidate Sites</h2>
+            <?php if ( $site_count > 0 ) : ?>
+            <table class="widefat fixed striped">
+                <thead>
+                    <tr>
+                        <th style="width:35px;">#</th>
+                        <th>Name</th>
+                        <th style="width:130px;">Latitude</th>
+                        <th style="width:130px;">Longitude</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <?php foreach ( $sites as $k => $site ) :
+                    if ( ! is_array($site) ) continue;
+                    $sName = isset($site['name']) ? $site['name'] : '—';
+                    $sLat  = isset($site['lat'])  ? $site['lat']  : '—';
+                    $sLng  = isset($site['lng'])  ? $site['lng']  : '—';
+                ?>
+                    <tr>
+                        <td><?php echo $k + 1; ?></td>
+                        <td><?php echo esc_html($sName); ?></td>
+                        <td><?php echo esc_html($sLat); ?></td>
+                        <td><?php echo esc_html($sLng); ?></td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+            <?php else : ?>
+                <p style="color:#888;">No candidate sites saved yet.</p>
+            <?php endif; ?>
+        </div>
+
+        <!-- ── Raw Data Debug (collapsible) ── -->
+        <div style="background:#fff; border:1px solid #ddd; border-radius:6px; padding:20px; margin-bottom:20px;">
+            <h2 style="margin-top:0;">
+                <a href="#" onclick="
+                    var el=document.getElementById('msm-raw-data');
+                    el.style.display=el.style.display==='none'?'block':'none';
+                    return false;">
+                    &#128269; View Raw Stored Data (Debug)
+                </a>
+            </h2>
+            <div id="msm-raw-data" style="display:none;">
+                <p style="font-size:12px;color:#555;">
+                    Shapes stored as GeoJSON FeatureCollection. Summary stored as array of row objects.
+                </p>
+                <strong>msm_land_shapes (<?php echo $shape_count; ?> features):</strong>
+                <pre style="background:#f5f5f5;padding:10px;overflow:auto;max-height:300px;font-size:11px;"><?php
+                    echo esc_html( json_encode($shapes_raw, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) );
+                ?></pre>
+                <strong>msm_land_summary (<?php echo count($summary_rows); ?> rows):</strong>
+                <pre style="background:#f5f5f5;padding:10px;overflow:auto;max-height:200px;font-size:11px;"><?php
+                    echo esc_html( json_encode($summary_raw, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) );
+                ?></pre>
+                <strong>msm_candidate_sites (<?php echo $site_count; ?> sites):</strong>
+                <pre style="background:#f5f5f5;padding:10px;overflow:auto;max-height:200px;font-size:11px;"><?php
+                    echo esc_html( json_encode($sites_raw, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) );
+                ?></pre>
+            </div>
+        </div>
+
+        <!-- ── Backup / Export ── -->
+        <div style="background:#fff; border:1px solid #ddd; border-radius:6px; padding:20px;">
+            <h2 style="margin-top:0;">Backup / Export</h2>
+            <p>Download a JSON backup of your saved data:</p>
+            <a href="<?php echo esc_url( rest_url('samaiden/v1/land-shapes') ); ?>"
+               target="_blank"
+               style="display:inline-block; margin-right:10px; padding:8px 16px; background:#2271b1; color:#fff; border-radius:4px; text-decoration:none;">
+                &#11015; Download Land Shapes
+            </a>
+            <a href="<?php echo esc_url( rest_url('samaiden/v1/candidate-sites') ); ?>"
+               target="_blank"
+               style="display:inline-block; padding:8px 16px; background:#2271b1; color:#fff; border-radius:4px; text-decoration:none;">
+                &#11015; Download Candidate Sites
+            </a>
+        </div>
+    </div>
+    <?php
+}
